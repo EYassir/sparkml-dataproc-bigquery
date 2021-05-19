@@ -1,0 +1,58 @@
+#!/bin/bash 
+
+set -e
+
+# Set conf
+TEMPLATE_ID=eyassir-workflow-template-demo
+REGION=us-central1
+USED_BUCKET_NAME=eyassir-dtaprox-workflow
+PROJECT_ID=eyassir-storage-project
+JOB_NAME=reg_job.py
+gcloud config set project $PROJECT_ID
+
+# Extract the data files
+echo '>> Extracting data'
+virtualenv -p python3 venv
+source venv/bin/activate
+pip install -r requirements.txt
+python bq_dataset.py
+echo ''
+
+# Create work-flow template
+echo '>> Creating workflow'
+if [ $( gcloud dataproc workflow-templates list --region $REGION | grep -c $TEMPLATE_ID ) -eq 1 ];then
+	gcloud dataproc workflow-templates delete $TEMPLATE_ID --region $REGION --quiet
+fi
+gcloud dataproc workflow-templates create $TEMPLATE_ID --region $REGION &> /dev/null
+# Create template conf 
+# https://cloud.google.com/sdk/gcloud/reference/dataproc/workflow-templates/set-managed-cluster#--image-version
+# https://cloud.google.com/dataproc/docs/concepts/versioning/dataproc-versions
+gcloud dataproc workflow-templates set-managed-cluster $TEMPLATE_ID \
+--region $REGION \
+--cluster-name eyassir-spark-cluster \
+--image-version 2.0-debian10  \
+--master-machine-type=n1-standard-4 \
+--worker-machine-type=n1-standard-4 \
+--worker-boot-disk-size=500 \
+--master-boot-disk-size=500 \
+--num-workers=2 \
+--num-masters=1 &> /dev/null
+echo ''
+
+#Copy job to bucket
+echo '>> Uploading the spark job'
+gsutil cp $JOB_NAME gs://$USED_BUCKET_NAME/jobs/$JOB_NAME
+# Link job to workflow
+STEP_ID=eyassir-pyspark-twitter
+gcloud dataproc workflow-templates add-job pyspark \
+gs://$USED_BUCKET_NAME/jobs/$JOB_NAME \
+--step-id $STEP_ID \
+--workflow-template $TEMPLATE_ID \
+--region $REGION \
+--properties spark.jars='gs://spark-lib/bigquery/spark-bigquery-latest_2.12.jar' &> /dev/null
+echo ''
+
+
+# Execute the job
+echo '>> running the spark job'
+gcloud dataproc workflow-templates instantiate $TEMPLATE_ID --region=$REGION --quiet
